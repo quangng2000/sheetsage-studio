@@ -22,6 +22,37 @@ from typing import Any, Callable, TextIO
 from uuid import uuid4
 
 
+# Keep these identifiers aligned with catalog.rs. The native API accepts an ID,
+# never a caller-provided filename. Optional exports remain genuinely optional.
+ARTIFACTS = (
+    ("abc", "score.abc", "ABC score", "notation"),
+    ("midi", "transcription.mid", "Arrangement MIDI", "midi"),
+    ("events", "events.json", "Raw model events", "json"),
+    ("summary", "result.json", "Analysis summary", "json"),
+    ("playback", "playback.json", "Playback tracks", "json"),
+    ("events_tsv", "events.tsv", "Event table", "table"),
+    ("beat", "beat.lab", "Beat grid", "annotation"),
+    ("downbeat", "downbeat.lab", "Downbeats", "annotation"),
+    ("rhythm_events", "rhythm_events.lab", "Raw rhythm events", "annotation"),
+    ("beat_meter", "beat_meter.lab", "Paper-preset beat/meter events", "annotation"),
+    ("structure", "structure.lab", "Song structure", "annotation"),
+    ("key", "key.lab", "Key changes", "annotation"),
+    ("chord", "chord.lab", "Chords", "annotation"),
+    ("melody_full", "melody_full.lab", "All melody notes", "annotation"),
+    ("melody_vocal", "melody_vocal.lab", "Vocal melody notes", "annotation"),
+    ("melody_instrumental", "melody_instrumental.lab", "Instrumental melody notes", "annotation"),
+    ("melody_midi", "melody.mid", "All melody MIDI", "midi"),
+    ("melody_vocal_midi", "melody_vocal.mid", "Vocal melody MIDI", "midi"),
+    ("melody_instrumental_midi", "melody_instrumental.mid", "Instrumental melody MIDI", "midi"),
+    ("chords_midi", "chords.mid", "Chord MIDI", "midi"),
+)
+RECORDED_SETTINGS = (
+    "prompts", "preset", "melody_only", "dtype", "window_seconds",
+    "overlap_seconds", "lookahead_seconds", "duration_seconds",
+)
+MAX_EXPORT_BYTES = 16 * 1024 * 1024
+
+
 class Cancelled(Exception):
     """Cooperative interruption at a model progress callback."""
 
@@ -119,21 +150,76 @@ def load_local_model(lab_root: Path) -> Any:
     ).eval().to("cpu")
 
 
-def read_result(output_dir: Path, audio_path: Path, audio_name: str | None = None) -> dict[str, Any]:
+def recorded_provenance(summary: dict[str, Any], lab_root: Path | None = None) -> dict[str, Any]:
+    """Record settings, not a quality/confidence score or unmeasured hardware claim."""
+    provenance: dict[str, Any] = {
+        "recorded_settings": {key: summary[key] for key in RECORDED_SETTINGS if key in summary},
+    }
+    if lab_root is not None:
+        sources_path = lab_root / "sources.json"
+        if sources_path.is_file():
+            sources = json.loads(sources_path.read_text(encoding="utf-8"))
+            provenance["sources"] = {
+                key: sources[key] for key in (
+                    "paper", "model", "model_revision", "base_model", "base_revision", "base_weight_license",
+                ) if isinstance(sources.get(key), str)
+            }
+        provenance["device"] = "cpu"
+        provenance["application"] = "SheetSage Studio"
+        provenance["capture_version"] = 1
+    return provenance
+
+
+def read_result(
+    output_dir: Path,
+    audio_path: Path,
+    audio_name: str | None = None,
+    *,
+    lab_root: Path | None = None,
+) -> dict[str, Any]:
     """Read only public, JSON-compatible exports, never model tensors or bytes."""
-    def read_json(filename: str, default: Any = None) -> Any:
+    output_dir = output_dir.resolve()
+
+    def export_path(filename: str) -> Path | None:
         path = output_dir / filename
-        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
+        if not path.is_file():
+            return None
+        path = path.resolve()
+        if not path.is_relative_to(output_dir):
+            raise ValueError("The model export is outside its output directory")
+        return path
+
+    def read_text(filename: str) -> str | None:
+        path = export_path(filename)
+        if path is None:
+            return None
+        with path.open("rb") as stream:
+            data = stream.read(MAX_EXPORT_BYTES + 1)
+        if len(data) > MAX_EXPORT_BYTES:
+            raise ValueError("The model export exceeds the size limit")
+        return data.decode("utf-8")
+
+    def read_json(filename: str, default: Any = None) -> Any:
+        text = read_text(filename)
+        return json.loads(text) if text is not None else default
 
     summary = read_json("result.json")
     if not isinstance(summary, dict):
         raise ValueError("The model did not produce a valid result.json export")
     abc = ""
     for filename in ("score.browser.abc", "score.abc"):
-        path = output_dir / filename
-        if path.is_file():
-            abc = path.read_text(encoding="utf-8")
+        text = read_text(filename)
+        if text is not None:
+            abc = text
             break
+    annotations = {}
+    available_artifacts = []
+    for artifact, filename, label, kind in ARTIFACTS:
+        if export_path(filename) is None:
+            continue
+        available_artifacts.append({"id": artifact, "filename": filename, "label": label, "kind": kind})
+        if kind == "annotation":
+            annotations[artifact] = read_text(filename)
     payload = {
         "run_id": output_dir.name,
         "output_dir": str(output_dir),
@@ -143,6 +229,9 @@ def read_result(output_dir: Path, audio_path: Path, audio_name: str | None = Non
         "abc": abc,
         "playback": read_json("playback.json", {"tracks": [], "duration": summary.get("duration_seconds", 0)}),
         "events": read_json("events.json", {"events": []}),
+        "annotations": annotations,
+        "available_artifacts": available_artifacts,
+        "provenance": recorded_provenance(summary, lab_root),
     }
     # Validate before publishing the history success marker or an event.
     json.dumps(payload, ensure_ascii=False, allow_nan=False)
@@ -265,7 +354,7 @@ class InferenceWorker:
             progress=lambda value: self._progress(task, value),
         )
         task.check_cancelled()
-        return read_result(output_dir, command.audio_path, command.audio_name), output_dir
+        return read_result(output_dir, command.audio_path, command.audio_name, lab_root=self.lab_root), output_dir
 
     def _run(self, task: Task) -> None:
         command = task.command
@@ -283,6 +372,7 @@ class InferenceWorker:
                         "audio_name": payload["audio_name"],
                         "max_seconds": command.max_seconds,
                         "created_at": datetime.now(timezone.utc).isoformat(),
+                        "provenance": payload["provenance"],
                     }
                     temporary = output_dir / ".ui.json.tmp"
                     temporary.write_text(json.dumps(metadata, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")

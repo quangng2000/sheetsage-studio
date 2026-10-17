@@ -121,7 +121,7 @@ The command prints an output directory under `runtime/outputs/`. Inspect that ex
 | --- | --- |
 | `result.json` | Duration, summary, warnings, notation diagnostics; valid JSON and no error result |
 | `events.json` | Nonempty musical events for a normal demo run; finite timestamps |
-| `playback.json` | Note tracks used by the piano roll |
+| `playback.json` | Synthesizable note tracks, including chord voicings; melody views use raw events |
 | `transcription.mid` | MIDI export, if generated; recognizable as a MIDI file |
 | `score.abc` | ABC notation, if generated |
 | `score.browser.abc` | Optional browser-compatible notation used in preference to `score.abc` |
@@ -138,12 +138,12 @@ cargo run --manifest-path desktop/Cargo.toml --locked
 
 Manual smoke test:
 
-1. Click **Explore the demo**, or **Choose audio** and select a recording.
+1. Click **Open demo session**, or **Import audio** and select a recording.
 2. Keep **First 20 seconds** selected for an initial test.
 3. Optionally click **Warm model**; wait for the ready state.
-4. Click **Transcribe**. The window should remain responsive while Python executes the model.
-5. Inspect **Piano roll**, **Sheet music**, and **Events**. Play and seek the original audio.
-6. Export **MIDI**, **ABC**, and the event **JSON** to user-selected destinations.
+4. Click **Analyze**. The window should remain responsive while Python executes the model.
+5. Inspect **Arrangement**: sections, chords, keys, meter, beat/downbeat grid, derived tempo, and raw vocal/instrumental melody. Click regions to seek and inspect them; use Fit/zoom to examine dense passages. Also inspect **Piano roll**, **Notation**, and **Event log**.
+6. Use the export picker for available MIDI, ABC, JSON/TSV, and individual LAB annotations. Verify absent exports are not offered. See [musical semantics and export IDs](MUSICAL_ANALYSIS.md).
 7. Run another job: the worker should retain the model instead of loading it again.
 8. Inspect history, including reopening a successful run after restarting the app.
 9. If testing cancellation, expect a delay during encoding. Cancelled partial outputs must not appear as completed history entries.
@@ -166,9 +166,13 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s desktop -p 'test_*.py' -v
 cargo test --manifest-path desktop/Cargo.toml --locked
 node --check desktop/ui/app.js
+node --check desktop/ui/music-analysis.js
+node --check desktop/ui/audio-preview.js
+node --check desktop/ui/workspace-view.js
+node --test tests/*.test.cjs
 ```
 
-The worker tests exercise parsing, lifecycle, cancellation, errors, serialized exports, and the stdout protocol with a fake model. They do not establish transcription quality or GPU correctness. Rust tests cover the catalog, path containment, completed-run handling, and request lifecycle helpers. The optional Node command only checks JavaScript syntax; Node is not needed to run the app.
+The worker tests exercise parsing, lifecycle, cancellation, errors, serialized exports, and the stdout protocol with a fake model. They do not establish transcription quality or GPU correctness. Rust tests cover the catalog, path containment, completed-run handling, and request lifecycle helpers. JavaScript tests validate meter-aware tempo, missing-value handling, raw note tracks, time boundaries, and model warnings without weights. Node is a development/test tool, not needed to run the app.
 
 ## 7. Worker protocol for integration
 

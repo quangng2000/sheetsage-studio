@@ -2,13 +2,14 @@
 
 // The webview only talks to the local Rust host. No remote API or upload exists.
 const $ = (id) => document.getElementById(id);
-const COLORS = ["#d9bd82", "#78bbaa", "#a899cb", "#b1c785", "#d49783"];
+const COLORS = ["#81b7b0", "#bea96b", "#a8a0ca", "#b1c785", "#d49783"];
 const state = {
   selectedAudio: null, result: null, runs: [], sample: null, busy: false,
   modelLoaded: false, modelInstalled: false, pythonAvailable: false,
-  activeTab: "roll", waveform: null, audioGeneration: 0, jobId: null,
+  activeTab: "arrangement", analysis: null, waveform: null, audioGeneration: 0, jobId: null,
   scoreRendered: false, animationFrame: null, toastTimer: null, jobKind: null,
   completedJobIds: new Set(),
+  playbackUrl: null, playbackMode: "empty", expectedDuration: null, mediaSrc: "",
 };
 const tauri = window.__TAURI__;
 const invoke = (command, args) => {
@@ -17,6 +18,7 @@ const invoke = (command, args) => {
 };
 const audio = $("audio");
 audio.volume = 0.8;
+const workspace = window.ProducerWorkspace?.create({root: $("arrangement-root"), onSeek: seekTo});
 
 function formatTime(seconds, fraction = false) {
   const value = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
@@ -25,7 +27,13 @@ function formatTime(seconds, fraction = false) {
 function number(value, fallback = "—") { return Number.isFinite(Number(value)) && value !== null ? Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 }) : fallback; }
 function eventsFor(result) { return Array.isArray(result?.events) ? result.events : result?.events?.events || []; }
 function pitchName(pitch) { const p = Number(pitch); return Number.isFinite(p) ? `${["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"][((p % 12) + 12) % 12]}${Math.floor(p / 12) - 1}` : "—"; }
-function resultDuration() { return Number(state.result?.playback?.duration ?? state.result?.summary?.duration_seconds) || 0; }
+function resultDuration() {
+  if(state.analysis)return state.analysis.duration;
+  return Number(state.result?.summary?.duration_seconds ?? state.result?.playback?.duration) || 0;
+}
+function melodyTracks() {
+  return state.analysis ? [{name:"Vocal melody",notes:state.analysis.melody.vocal},{name:"Instrumental melody",notes:state.analysis.melody.instrumental}] : [];
+}
 function sameAudio(left, right) { return Boolean(left && right && left.path === right.path); }
 function assetUrl(asset) { return asset?.url || (asset?.path && tauri?.core?.convertFileSrc ? tauri.core.convertFileSrc(asset.path) : ""); }
 function setText(id, value) { $(id).textContent = value; }
@@ -50,6 +58,8 @@ function updateControls() {
   $("model-light").className = `status-light${state.busy ? " working" : state.modelLoaded ? " ready" : ""}`;
   setText("model-status", state.busy ? "Model working" : state.modelLoaded ? "Model ready" : !state.pythonAvailable ? "Python unavailable" : !state.modelInstalled ? "Model not installed" : "Model on disk");
   for (const id of ["export-midi", "export-abc", "export-events", "open-output"]) $(id).disabled = !state.result;
+  if ($("export-artifact")) $("export-artifact").disabled = !state.result || !$("artifact-select")?.options.length;
+  if ($("artifact-select")) $("artifact-select").disabled = !state.result;
   for (const button of $("run-history").querySelectorAll("button")) button.disabled = state.busy;
 }
 function beginJob(title, detail, kind = "transcribe") {
@@ -65,7 +75,9 @@ function finishJob() {
 async function setAudio(asset) {
   const generation = ++state.audioGeneration;
   state.selectedAudio = asset; state.waveform = null;
+  workspace?.setWaveform(null, 0);
   audio.pause(); audio.removeAttribute("src"); audio.load();
+  releasePlaybackPreview();state.playbackMode=asset?"checking":"empty";state.expectedDuration=null;state.mediaSrc="";
   $("seek").value = 0; $("seek").disabled = true; $("play-button").disabled = true;
   setText("play-time", "0:00"); setText("total-time", "0:00");
   setText("audio-name", asset?.name || "Choose a recording");
@@ -76,7 +88,7 @@ async function setAudio(asset) {
   if (!asset) return;
   const url = assetUrl(asset);
   if (!url) { showError("The desktop host did not provide a playable audio URL."); return; }
-  audio.src = url; audio.load();
+  audio.src = url; state.mediaSrc=audio.src; audio.load();
   let context;
   try {
     const response = await fetch(url);
@@ -89,6 +101,20 @@ async function setAudio(asset) {
     context = new (window.AudioContext || window.webkitAudioContext)();
     const decoded = await context.decodeAudioData(bytes);
     if (generation !== state.audioGeneration) return;
+    state.expectedDuration=decoded.duration;
+    if(window.AudioPreview.needsCompatibilityPreview(audio.duration,decoded.duration)) {
+      // Some DASH/AAC containers expose the wrong media clock in WKWebView.
+      // A bounded PCM preview fixes playback without changing inference input.
+      try {
+        const wav=window.AudioPreview.encodePCM16(decoded);
+        const preview=URL.createObjectURL(new Blob([wav],{type:"audio/wav"}));
+        state.playbackUrl=preview;state.playbackMode="preview";
+        audio.pause();audio.src=preview;state.mediaSrc=audio.src;audio.load();
+      } catch(error) {
+        state.playbackMode="unsupported";
+        showError(`Playback timing is unsupported for this recording. Analysis remains available. ${error.message||error}`);
+      }
+    } else state.playbackMode="original";
     const data = decoded.getChannelData(0);
     const buckets = 1600;
     const peaks = new Float32Array(buckets);
@@ -102,13 +128,41 @@ async function setAudio(asset) {
       peaks[i] = peak;
     }
     state.waveform = peaks; $("waveform-empty").hidden = true; drawWaveform();
+    workspace?.setWaveform(peaks, decoded.duration);
+    refreshMediaControls();
   } catch (error) {
     if (generation === state.audioGeneration) {
       $("waveform-empty").lastChild.textContent = "Waveform unavailable · Use the playback controls below";
       console.info("Waveform preview:", error);
+      if(state.playbackMode==="checking"){
+        state.playbackMode=audio.error?"unsupported":"original";
+        if(audio.error)showError("This recording cannot be played in the desktop player. Analysis and inspection remain available.");
+      }
+      refreshMediaControls();
     }
   } finally { if (context) await context.close().catch(() => {}); }
 }
+
+function releasePlaybackPreview(){
+  if(state.playbackUrl)URL.revokeObjectURL(state.playbackUrl);
+  state.playbackUrl=null;
+}
+function refreshMediaControls(){
+  if(audio.currentSrc&&state.mediaSrc&&audio.currentSrc!==state.mediaSrc)return;
+  const hasMetadata=audio.readyState>=1&&Number.isFinite(audio.duration)&&audio.duration>0;
+  if(hasMetadata&&["original","preview"].includes(state.playbackMode)&&state.expectedDuration!==null&&window.AudioPreview.needsCompatibilityPreview(audio.duration,state.expectedDuration)){
+    state.playbackMode="unsupported";audio.pause();
+    showError("The compatible preview still has an invalid playback clock. Analysis remains available; playback is disabled.");
+  }
+  const ready=hasMetadata&&["original","preview"].includes(state.playbackMode);
+  $("play-button").disabled=!ready;$("seek").disabled=!ready;
+  if(ready){
+    setText("total-time",formatTime(audio.duration));
+    setText("audio-detail",`${formatTime(audio.duration)} recording · ${state.playbackMode==="preview"?"Compatible PCM playback · Original used for analysis":"Local audio"}`);
+    updatePlayback();
+  }else if(state.playbackMode==="unsupported")setText("audio-detail","Playback timing unsupported · Analysis and inspection remain available");
+}
+window.addEventListener("beforeunload",releasePlaybackPreview);
 
 function canvasContext(id) {
   const canvas = $(id), rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
@@ -122,7 +176,7 @@ function canvasContext(id) {
 function drawWaveform() {
   const surface = canvasContext("waveform"); if (!surface) return;
   const {ctx,width,height} = surface;
-  ctx.strokeStyle = "#354637"; ctx.lineWidth = .5;
+  ctx.strokeStyle = "#343d47"; ctx.lineWidth = .5;
   ctx.beginPath(); ctx.moveTo(0,height/2); ctx.lineTo(width,height/2); ctx.stroke();
   if (!state.waveform) return;
   const fraction = audio.duration ? audio.currentTime / audio.duration : 0;
@@ -131,7 +185,7 @@ function drawWaveform() {
     const start = Math.floor(i / bars * state.waveform.length), end = Math.max(start+1,Math.floor((i+1)/bars*state.waveform.length));
     let peak = 0; for (let j=start;j<end;j++) peak=Math.max(peak,state.waveform[j]||0);
     const h = Math.max(2, Math.pow(peak,.7) * (height - 16));
-    ctx.fillStyle = i / bars <= fraction ? "#dfc48d" : "#739b79";
+    ctx.fillStyle = i / bars <= fraction ? "#dfc48d" : "#739b98";
     ctx.fillRect(i*3.5, (height-h)/2, barWidth,h);
   }
   if (fraction>0) {ctx.strokeStyle="#e0cc9a";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(fraction*width,5);ctx.lineTo(fraction*width,height-5);ctx.stroke();}
@@ -139,7 +193,8 @@ function drawWaveform() {
 function drawPianoRoll() {
   const surface=canvasContext("piano-roll"); if(!surface || !state.result)return;
   const {ctx,width,height}=surface;
-  const tracks=state.result.playback?.tracks || [], notes=tracks.flatMap(t=>t.notes || []), duration=resultDuration();
+  // Draw raw decoder melody, never synthesized chord voicings from playback MIDI.
+  const tracks=melodyTracks(), notes=tracks.flatMap(t=>t.notes || []), duration=resultDuration();
   const left=52,right=16,top=13,bottom=24,plotWidth=width-left-right,plotHeight=height-top-bottom;
   if(!notes.length || !duration) {ctx.fillStyle="#8fa793";ctx.font="11px -apple-system, sans-serif";ctx.fillText("No melody notes were found in this recording.",left,50);return;}
   const pitches=notes.map(n=>Number(n.pitch)).filter(Number.isFinite);
@@ -148,20 +203,20 @@ function drawPianoRoll() {
   const rows=high-low+1,rowHeight=plotHeight/rows;
   for(let pitch=low;pitch<=high;pitch++) {
     const y=top+(high-pitch)*rowHeight;
-    ctx.fillStyle=[1,3,6,8,10].includes(pitch%12)?"#151e17":"#1a251d";ctx.fillRect(left,y,plotWidth,rowHeight);
-    ctx.strokeStyle="#2a3b2d";ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(width-right,y);ctx.stroke();
-    ctx.fillStyle=[1,3,6,8,10].includes(pitch%12)?"#172119":"#28392b";ctx.fillRect(0,y,left-1,rowHeight-1);
-    if(pitch%12===0 || rows<18){ctx.fillStyle=pitch%12===0?"#a5bea9":"#647e6a";ctx.font="8px -apple-system, sans-serif";ctx.textAlign="right";ctx.fillText(pitchName(pitch),left-10,y+rowHeight/2+3);}
+    ctx.fillStyle=[1,3,6,8,10].includes(pitch%12)?"#151a21":"#1b222b";ctx.fillRect(left,y,plotWidth,rowHeight);
+    ctx.strokeStyle="#2c3540";ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(width-right,y);ctx.stroke();
+    ctx.fillStyle=[1,3,6,8,10].includes(pitch%12)?"#17202a":"#283442";ctx.fillRect(0,y,left-1,rowHeight-1);
+    if(pitch%12===0 || (rows<18&&rowHeight>=13)){ctx.fillStyle=pitch%12===0?"#b3becd":"#81909f";ctx.font="11px -apple-system, sans-serif";ctx.textAlign="right";ctx.fillText(pitchName(pitch),left-10,y+rowHeight/2+3);}
   }
   const step=duration<=25?2:duration<=60?5:duration<=180?15:60;
-  for(let t=0;t<=duration;t+=step){const x=left+t/duration*plotWidth;ctx.strokeStyle="#354f3a";ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,height-bottom);ctx.stroke();ctx.fillStyle="#779980";ctx.font="8px -apple-system, sans-serif";ctx.textAlign="center";ctx.fillText(formatTime(t),x,height-8);}
+  for(let t=0;t<=duration;t+=step){const x=left+t/duration*plotWidth;ctx.strokeStyle="#35404d";ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,height-bottom);ctx.stroke();ctx.fillStyle="#8b9bab";ctx.font="11px -apple-system, sans-serif";ctx.textAlign="center";ctx.fillText(formatTime(t),x,height-8);}
   tracks.forEach((track,index)=>(track.notes||[]).forEach(note=>{
     const start=Math.max(0,Number(note.start)||0),end=Math.min(duration,Number(note.end)||0),pitch=Number(note.pitch);
     if(end<=start || !Number.isFinite(pitch))return;
     const x=left+start/duration*plotWidth,y=top+(high-pitch)*rowHeight+1,w=Math.max(2,(end-start)/duration*plotWidth-1),h=Math.max(2,rowHeight-2);
     ctx.fillStyle=COLORS[index%COLORS.length];ctx.globalAlpha=audio.currentTime>=start&&audio.currentTime<end&&!audio.paused?1:.78;
     ctx.beginPath();if(ctx.roundRect)ctx.roundRect(x,y,w,h,Math.min(2,h/3));else ctx.rect(x,y,w,h);ctx.fill();ctx.globalAlpha=1;
-    if(w>29&&h>8){ctx.fillStyle="#263c2d";ctx.font="7px -apple-system, sans-serif";ctx.textAlign="left";ctx.fillText(pitchName(pitch),x+4,y+h/2+2.5);}
+    if(w>35&&h>=13){ctx.fillStyle="#1a282b";ctx.font="11px -apple-system, sans-serif";ctx.textAlign="left";ctx.fillText(pitchName(pitch),x+4,y+h/2+3.5);}
   }));
   if(audio.currentTime<=duration){const x=left+audio.currentTime/duration*plotWidth;ctx.fillStyle="#e9e1c4";ctx.fillRect(x,top,1,plotHeight);ctx.beginPath();ctx.moveTo(x-3,0);ctx.lineTo(x+3,0);ctx.lineTo(x,5);ctx.fill();}
 }
@@ -184,10 +239,15 @@ function renderEvents() {
   setText("event-count",`${events.length} musical events`);
   const fragment=document.createDocumentFragment();
   for(const event of events) {
-    const values=event.values||event,time=Number(event.time??values.timestamp)||0,row=document.createElement("tr");
-    const melody=Array.isArray(values.melody)?values.melody.map(n=>pitchName(n.pitch)).join(" · "):"—";
-    for(const value of [formatTime(time,true),values.chord||"—",values.key||"—",values.structure||"—",melody||"—"]){const td=document.createElement("td");td.textContent=String(value);row.append(td);}
-    row.tabIndex=0;row.setAttribute("aria-label",`Seek to ${formatTime(time,true)}`);row.addEventListener("click",()=>seekTo(time));row.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();seekTo(time);}});fragment.append(row);
+    const values=event.values||event,time=Number(event.time??values.timestamp),row=document.createElement("tr");
+    if(!Number.isFinite(time)||time<0)continue;
+    const context=state.analysis&&window.MusicAnalysis.atTime(state.analysis,time);
+    const beat=state.analysis?.beats.find(b=>Math.abs(b.time-time)<0.000001);
+    const melody=Array.isArray(values.melody)?values.melody.map(n=>`${pitchName(n.pitch)} (${n.track===0?"vocal":n.track===1?"instrumental":"unknown track"})`).join(" · "):"—";
+    for(const value of [formatTime(time,true),beat?.position??"—",context?.meter?.label??"—",beat?.downbeat?"Downbeat":"—",context?.tempo?`${number(context.tempo.bpm)} BPM`:"—",values.chord||"—",values.key||"—",values.structure||"—",melody||"—"]){const td=document.createElement("td");td.textContent=String(value);row.append(td);}
+    const details=document.createElement("details"),label=document.createElement("summary"),source=document.createElement("pre");
+    details.className="raw-event";label.textContent="Raw event";source.textContent=JSON.stringify(event,null,2);details.append(label,source);row.lastChild.append(details);
+    row.tabIndex=0;row.setAttribute("aria-label",`Seek to ${formatTime(time,true)}`);row.addEventListener("click",e=>{if(!e.target.closest("details"))seekTo(time);});row.addEventListener("keydown",e=>{if(e.target===row&&(e.key==="Enter"||e.key===" ")){e.preventDefault();seekTo(time);}});fragment.append(row);
   }
   body.append(fragment);
 }
@@ -214,26 +274,29 @@ function renderScore() {
 function selectTab(tab) {
   state.activeTab=tab;
   for(const button of document.querySelectorAll("[data-tab]")){const active=button.dataset.tab===tab;button.classList.toggle("active",active);button.setAttribute("aria-selected",String(active));button.tabIndex=active?0:-1;}
-  for(const name of ["roll","score","events"])$(`panel-${name}`).hidden=name!==tab;
+  for(const name of ["arrangement","roll","score","events"]){const panel=$(`panel-${name}`);if(panel)panel.hidden=name!==tab;}
   if(tab==="score")renderScore();if(tab==="roll")drawPianoRoll();
+  if(tab==="arrangement")workspace?.resize();
 }
 function renderResult(result) {
-  state.result=result;state.scoreRendered=false;
+  state.result=result;state.scoreRendered=false;state.analysis=result&&window.MusicAnalysis?window.MusicAnalysis.analyze(result):null;
+  workspace?.setResult(result);
   $("empty-result").hidden=Boolean(result);$("result-panels").hidden=!result;$("stats").hidden=!result;
   setText("result-state",result?"Transcribed locally":"Ready to explore");
   $("track-legend").replaceChildren();
   if(result){
-    (result.playback?.tracks||[]).forEach((track,index)=>{const item=document.createElement("span");item.className="legend-item";const swatch=document.createElement("span");swatch.className="legend-swatch";swatch.style.backgroundColor=COLORS[index%COLORS.length];item.append(swatch,document.createTextNode(track.name||`Track ${index+1}`));$("track-legend").append(item);});
-    const first=eventsFor(result).find(e=>(e.values||e).key),meter=eventsFor(result).find(e=>(e.values||e).rhythm?.meter);
-    setText("key-label",`KEY ${(first?.values?.key??first?.key??"—").replace(":minor"," minor").replace(":major"," major")}`);
-    const m=meter?.values?.rhythm?.meter??meter?.rhythm?.meter;setText("meter-label",`METER ${Array.isArray(m)?m.join("/"):"—"}`);
+    melodyTracks().forEach((track,index)=>{const item=document.createElement("span");item.className="legend-item";const swatch=document.createElement("span");swatch.className="legend-swatch";swatch.style.backgroundColor=COLORS[index%COLORS.length];item.append(swatch,document.createTextNode(track.name));$("track-legend").append(item);});
+    const keys=state.analysis?.keys.map(region=>region.label)??[],meters=state.analysis?.meters.map(region=>region.label)??[];
+    const sequence=(labels)=>labels.length>4?`${labels[0]} · ${labels.length} regions (see Arrangement)`:labels.join(" → ")||"Not predicted";
+    setText("key-label",`KEY ${sequence(keys.map(key=>key.replace(":minor"," minor").replace(":major"," major")))}`);
+    setText("meter-label",`METER ${sequence(meters)}`);
     setText("roll-duration",`${formatTime(resultDuration())} ANALYZED`);
     const elapsed=result.summary?.elapsed_seconds;
     setText("footer-status",elapsed!==undefined?`SheetSage2 · ${number(elapsed)} sec inference · ${result.summary?.dtype||"local"}`:"SheetSage2 · Local transcription");
-    renderChords();renderEvents();renderStats();selectTab(state.activeTab);
+    renderChords();renderEvents();renderStats();renderArtifactOptions();selectTab(state.activeTab);
     const warnings=[...(result.summary?.warnings||[]),...(result.summary?.abc_error?[result.summary.abc_error]:[])];
     if(warnings.length)showError(`Model note: ${warnings.join(" · ")}`);
-  }else{setText("footer-status","SheetSage2 · Music understanding, on your machine");}
+  }else{setText("footer-status","SheetSage2 · Music understanding, on your machine");renderArtifactOptions();}
   renderHistory();updateControls();
 }
 function renderHistory() {
@@ -245,7 +308,7 @@ async function loadRun(runId){if(state.busy)return;try{const result=await invoke
 async function chooseAudio(){try{const asset=await invoke("pick_audio");if(asset){$("error-banner").hidden=true;renderResult(null);await setAudio(asset);}}catch(error){showError(error);}}
 async function selectSample(){if(state.busy)return;try{const sample=await invoke("select_sample");state.sample=sample;const saved=state.runs.find(run=>run.name===sample.name);if(saved){const result=await invoke("get_run",{runId:saved.id});if(result.audio_path===sample.path){$("error-banner").hidden=true;renderResult(result);await setAudio(sample);return;}}$("error-banner").hidden=true;renderResult(null);await setAudio(sample);}catch(error){showError(error);}}
 function seekTo(time){if(!Number.isFinite(audio.duration))return;audio.currentTime=Math.max(0,Math.min(audio.duration,time));updatePlayback();}
-function updatePlayback(){setText("play-time",formatTime(audio.currentTime));$("seek").value=audio.duration?Math.round(audio.currentTime/audio.duration*1000):0;$("play-button").textContent=audio.paused?"▶":"Ⅱ";$("play-button").setAttribute("aria-label",audio.paused?"Play audio":"Pause audio");drawWaveform();if(state.activeTab==="roll")drawPianoRoll();}
+function updatePlayback(){setText("play-time",formatTime(audio.currentTime));$("seek").value=audio.duration?Math.round(audio.currentTime/audio.duration*1000):0;$("play-button").textContent=audio.paused?"▶":"Ⅱ";$("play-button").setAttribute("aria-label",audio.paused?"Play audio":"Pause audio");workspace?.setPlayback(audio.currentTime,!audio.paused);drawWaveform();if(state.activeTab==="roll")drawPianoRoll();}
 function animate(){updatePlayback();if(!audio.paused)state.animationFrame=requestAnimationFrame(animate);}
 function timelineSeek(event,kind){const rect=event.currentTarget.getBoundingClientRect();let x=event.clientX-rect.left,width=rect.width,duration=audio.duration;if(kind==="roll"){x-=52;width-=68;duration=resultDuration();}if(x>=0&&x<=width&&Number.isFinite(duration))seekTo(x/width*duration);}
 
@@ -259,18 +322,30 @@ $("seek").addEventListener("input",()=>seekTo(Number($("seek").value)/1000*audio
 $("volume").addEventListener("input",()=>{audio.volume=Number($("volume").value);});
 $("waveform").addEventListener("click",e=>timelineSeek(e,"waveform"));
 $("piano-roll").addEventListener("click",e=>timelineSeek(e,"roll"));
-audio.addEventListener("loadedmetadata",()=>{setText("total-time",formatTime(audio.duration));setText("audio-detail",`${formatTime(audio.duration)} recording · Local audio`);$("play-button").disabled=false;$("seek").disabled=false;updatePlayback();});
+audio.addEventListener("loadedmetadata",refreshMediaControls);
+audio.addEventListener("durationchange",refreshMediaControls);
 audio.addEventListener("play",()=>{cancelAnimationFrame(state.animationFrame);animate();});
 audio.addEventListener("pause",()=>{cancelAnimationFrame(state.animationFrame);updatePlayback();});
 audio.addEventListener("timeupdate",()=>{if(audio.paused)updatePlayback();});
 audio.addEventListener("ended",updatePlayback);
-audio.addEventListener("error",()=>{if(state.selectedAudio)showError("This recording cannot be played in the desktop audio player. You can still try transcribing it.");});
-for(const tab of document.querySelectorAll("[data-tab]")){tab.addEventListener("click",()=>selectTab(tab.dataset.tab));tab.addEventListener("keydown",event=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();const tabs=["roll","score","events"],index=tabs.indexOf(state.activeTab);const next=event.key==="Home"?0:event.key==="End"?2:(index+(event.key==="ArrowRight"?1:2))%3;selectTab(tabs[next]);$(`tab-${tabs[next]}`).focus();}});}
+audio.addEventListener("error",()=>{
+  if(!state.selectedAudio||!state.mediaSrc||!audio.error||state.playbackMode==="checking")return;
+  if(audio.currentSrc&&audio.currentSrc!==state.mediaSrc)return;
+  state.playbackMode="unsupported";refreshMediaControls();showError("This recording cannot be played in the desktop audio player. Analysis and inspection are still available.");
+});
+for(const tab of document.querySelectorAll("[data-tab]")){tab.addEventListener("click",()=>selectTab(tab.dataset.tab));tab.addEventListener("keydown",event=>{if(["ArrowLeft","ArrowRight","Home","End"].includes(event.key)){event.preventDefault();const tabs=[...document.querySelectorAll("[data-tab]")].map(button=>button.dataset.tab),index=tabs.indexOf(state.activeTab);const next=event.key==="Home"?0:event.key==="End"?tabs.length-1:(index+(event.key==="ArrowRight"?1:tabs.length-1))%tabs.length;selectTab(tabs[next]);$(`tab-${tabs[next]}`).focus();}});}
 $("toggle-abc").addEventListener("click",()=>{$("abc-source").hidden=!$("abc-source").hidden;setText("toggle-abc",$("abc-source").hidden?"Show ABC source":"Hide ABC source");});
 $("transcribe-button").addEventListener("click",async()=>{if(state.busy||!state.selectedAudio)return;beginJob("Starting transcription","Preparing your recording. The first run also loads model weights.");try{const job=await invoke("start_transcription",{audioPath:state.selectedAudio.path,audioName:state.selectedAudio.name,maxSeconds:Number($("clip-duration").value)});if(state.busy)state.jobId=job.id;}catch(error){finishJob();showError(error);}});
 $("warm-button").addEventListener("click",async()=>{beginJob("Warming the local model","Loading model weights into memory for faster subsequent runs.","warm");try{const job=await invoke("warm_model");if(state.busy)state.jobId=job.id;}catch(error){finishJob();showError(error);}});
 $("cancel-button").addEventListener("click",async()=>{try{$("cancel-button").disabled=true;await invoke("cancel_job");setText("job-detail","Cancellation requested. Waiting for the local worker to stop…");}catch(error){showError(error);}finally{$("cancel-button").disabled=false;}});
 for(const [id,artifact] of [["export-midi","midi"],["export-abc","abc"],["export-events","events"]])$(id).addEventListener("click",async()=>{if(!state.result)return;try{const path=await invoke("export_artifact",{runId:state.result.run_id,artifact});if(path)toast(`Saved ${artifact.toUpperCase()} to ${path}`);}catch(error){showError(error);}});
+function renderArtifactOptions(){
+  const select=$("artifact-select");if(!select)return;const previous=select.value;select.replaceChildren();
+  const artifacts=state.result?.available_artifacts??(state.result?[{id:"events",label:"Musical events",filename:"events.json"},{id:"midi",label:"Combined MIDI",filename:"transcription.mid"},...(state.result.abc?[{id:"abc",label:"Sheet music",filename:"score.abc"}]:[])]:[]);
+  for(const artifact of artifacts){const option=document.createElement("option");option.value=artifact.id;option.textContent=`${artifact.label} · ${artifact.filename}`;select.append(option);}
+  if([...select.options].some(option=>option.value===previous))select.value=previous;
+}
+$("export-artifact")?.addEventListener("click",async()=>{if(!state.result||!$("artifact-select")?.value)return;try{const path=await invoke("export_artifact",{runId:state.result.run_id,artifact:$("artifact-select").value});if(path)toast(`Saved analysis export to ${path}`);}catch(error){showError(error);}});
 $("open-output").addEventListener("click",async()=>{if(state.result)try{await invoke("open_output",{runId:state.result.run_id});}catch(error){showError(error);}});
 
 function completeJob(id){
@@ -309,7 +384,7 @@ function handleModelEvent(event){
   else if(data.type==="cancelled"){completeJob(data.id);toast("Transcription cancelled.");}
 }
 
-const resizeObserver=new ResizeObserver(()=>{drawWaveform();if(state.activeTab==="roll")drawPianoRoll();});
+const resizeObserver=new ResizeObserver(()=>{drawWaveform();if(state.activeTab==="roll")drawPianoRoll();if(state.activeTab==="arrangement")workspace?.resize();});
 resizeObserver.observe($("waveform"));resizeObserver.observe($("piano-roll"));
 async function boot(){
   updateControls();

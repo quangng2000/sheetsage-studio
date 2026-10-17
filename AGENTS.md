@@ -18,6 +18,8 @@ Read [README.md](README.md), then follow [docs/AGENT_RUNBOOK.md](docs/AGENT_RUNB
 | `desktop/src/catalog.rs` | Imported audio, history, artifact validation and export |
 | `desktop/worker.py` | Validated JSON-lines protocol and CPU model execution |
 | `desktop/ui/` | Buildless HTML/CSS/JavaScript, score and piano-roll views |
+| `desktop/ui/music-analysis.js` | Pure normalization of model events and derived quarter-note tempo; shared by all musical views |
+| `desktop/ui/workspace-view.js` | Producer-style arrangement timeline and musical inspector |
 | `runtime/` | Downloaded Python environment, models, imported audio, private output; never commit |
 
 No npm install or frontend bundler is required. Retain `desktop/Cargo.lock` and use Cargo's `--locked` flag. Do not silently upgrade model revisions, Python dependencies, Rust dependencies, or the bundled abcjs asset.
@@ -44,6 +46,7 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s desktop -p 'test_*.py' -v
 cargo test --manifest-path desktop/Cargo.toml --locked
 node --check desktop/ui/app.js
+node --test tests/*.test.cjs
 ```
 
 Node is optional for the JavaScript syntax check, not an app runtime requirement. Python worker tests use a fake model and must not download weights or import torch. Rust tests validate catalog paths and lifecycle behavior without model inference.
@@ -60,6 +63,7 @@ For a model-related change, also run one real CPU/FP32 transcription and inspect
 - A desktop run is successful only after `ui.json` is atomically published. Cancelled or failed partial outputs must not appear as successful history.
 - Do not represent the `.app` as self-contained: it depends on this checkout, Python, and downloaded model files.
 - MPS is unvalidated; the desktop uses CPU/FP32. Do not claim GPU acceleration or real-time audio streaming without implementation and measurement.
+- Distinguish raw model predictions from derived tempo and notation adjustments. Preserve meter changes and missing values; never invent confidence scores or labels. Vocal/instrumental melody lanes are note predictions, not separated audio stems.
 
 ## Safety and publication
 

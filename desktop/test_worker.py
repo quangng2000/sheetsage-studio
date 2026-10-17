@@ -122,6 +122,94 @@ class WorkerTest(unittest.TestCase):
         metadata = json.loads((Path(payload["output_dir"]) / "ui.json").read_text())
         self.assertEqual(metadata["audio_name"], "Original mélodie.mp3")
 
+    def test_all_annotation_fields_and_available_exports_are_preserved(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        raw_events = {
+            "schema_version": "v1",
+            "events": [{"time": 0.25, "global_subbeat": 1, "values": {
+                "timestamp": 0.25, "rhythm": {"meter": [6, 8], "eighth_position": 1},
+                "structure": "verse", "key": "C:major", "chord": "C:maj",
+                "melody": [{"pitch": 60, "track": 0, "end_time": 0.75}],
+            }}],
+        }
+        (output / "events.json").write_text(json.dumps(raw_events), encoding="utf-8")
+        for artifact, filename, label, kind in worker_module.ARTIFACTS:
+            if kind == "annotation":
+                (output / filename).write_text(f"0.25\t1.0\t{artifact}\n", encoding="utf-8")
+            elif not (output / filename).exists():
+                (output / filename).write_bytes(b"fixture")
+        payload = worker_module.read_result(output, self.audio)
+        self.assertEqual(payload["events"], raw_events)
+        self.assertEqual(len(payload["annotations"]), 10)
+        self.assertEqual(payload["annotations"]["rhythm_events"], "0.25\t1.0\trhythm_events\n")
+        self.assertEqual([value["id"] for value in payload["available_artifacts"]],
+                         [value[0] for value in worker_module.ARTIFACTS])
+        self.assertEqual(len({value[0] for value in worker_module.ARTIFACTS}), len(worker_module.ARTIFACTS))
+        json.dumps(payload, allow_nan=False)
+
+    def test_optional_and_empty_annotations_are_distinguished(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        (output / "melody_instrumental.lab").write_text("", encoding="utf-8")
+        (output / "unrecognized.lab").write_text("not allowlisted", encoding="utf-8")
+        payload = worker_module.read_result(output, self.audio)
+        self.assertEqual(payload["annotations"], {"melody_instrumental": ""})
+        available = {value["id"] for value in payload["available_artifacts"]}
+        self.assertIn("melody_instrumental", available)
+        self.assertNotIn("beat_meter", available)
+        self.assertNotIn("unrecognized", available)
+        self.assertNotIn("device", payload["provenance"])
+
+    def test_new_run_provenance_is_recorded_for_history_without_private_paths(self):
+        (self.root / "sources.json").write_text(json.dumps({
+            "model": "publisher/model", "model_revision": "pinned-revision",
+            "base_model": "publisher/base", "base_revision": "base-revision",
+            "private_local_path": str(self.root),
+        }), encoding="utf-8")
+        model = Mock()
+        def transcribe(audio, *, output_dir, **options):
+            write_exports(output_dir)
+            summary = json.loads((output_dir / "result.json").read_text())
+            summary.update({"preset": "default", "dtype": "fp32", "window_seconds": 300,
+                            "prompts": ["timestamp", "downbeat_meter", "structure", "key", "chord_full", "melody_full"]})
+            (output_dir / "result.json").write_text(json.dumps(summary), encoding="utf-8")
+        model.transcribe.side_effect = transcribe
+        worker = self.make_worker(model)
+        worker.dispatch(self.transcribe_command())
+        worker.wait_idle()
+        payload = next(event["result"] for event in self.events() if event["type"] == "result")
+        provenance = payload["provenance"]
+        self.assertEqual(provenance["device"], "cpu")
+        self.assertEqual(provenance["sources"]["model_revision"], "pinned-revision")
+        self.assertEqual(provenance["recorded_settings"]["window_seconds"], 300)
+        self.assertNotIn(str(self.root), json.dumps(provenance))
+        metadata = json.loads((Path(payload["output_dir"]) / "ui.json").read_text())
+        self.assertEqual(metadata["provenance"], provenance)
+
+    def test_annotation_symlink_escape_and_oversized_export_are_rejected(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        (output / "key.lab").symlink_to(self.audio)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            worker_module.read_result(output, self.audio)
+        (output / "key.lab").unlink()
+        with (output / "beat.lab").open("wb") as stream:
+            stream.truncate(worker_module.MAX_EXPORT_BYTES + 1)
+        with self.assertRaisesRegex(ValueError, "size limit"):
+            worker_module.read_result(output, self.audio)
+
+    def test_nonfinite_raw_event_is_rejected_before_serialization(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        (output / "events.json").write_text('{"events":[{"time":Infinity}]}', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            worker_module.read_result(output, self.audio)
+
     def test_cancel_is_processed_while_inference_is_busy(self):
         entered = threading.Event()
         resume = threading.Event()

@@ -17,6 +17,77 @@ const MAX_ABC_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EVENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CATALOG_ENTRIES: usize = 10_000;
 
+// Keep this registry aligned with desktop/worker.py. Callers provide IDs only;
+// neither annotation loading nor export accepts an arbitrary file path.
+const ARTIFACTS: &[(&str, &str, &str, &str)] = &[
+    ("abc", "score.abc", "ABC score", "notation"),
+    ("midi", "transcription.mid", "Arrangement MIDI", "midi"),
+    ("events", "events.json", "Raw model events", "json"),
+    ("summary", "result.json", "Analysis summary", "json"),
+    ("playback", "playback.json", "Playback tracks", "json"),
+    ("events_tsv", "events.tsv", "Event table", "table"),
+    ("beat", "beat.lab", "Beat grid", "annotation"),
+    ("downbeat", "downbeat.lab", "Downbeats", "annotation"),
+    (
+        "rhythm_events",
+        "rhythm_events.lab",
+        "Raw rhythm events",
+        "annotation",
+    ),
+    (
+        "beat_meter",
+        "beat_meter.lab",
+        "Paper-preset beat/meter events",
+        "annotation",
+    ),
+    ("structure", "structure.lab", "Song structure", "annotation"),
+    ("key", "key.lab", "Key changes", "annotation"),
+    ("chord", "chord.lab", "Chords", "annotation"),
+    (
+        "melody_full",
+        "melody_full.lab",
+        "All melody notes",
+        "annotation",
+    ),
+    (
+        "melody_vocal",
+        "melody_vocal.lab",
+        "Vocal melody notes",
+        "annotation",
+    ),
+    (
+        "melody_instrumental",
+        "melody_instrumental.lab",
+        "Instrumental melody notes",
+        "annotation",
+    ),
+    ("melody_midi", "melody.mid", "All melody MIDI", "midi"),
+    (
+        "melody_vocal_midi",
+        "melody_vocal.mid",
+        "Vocal melody MIDI",
+        "midi",
+    ),
+    (
+        "melody_instrumental_midi",
+        "melody_instrumental.mid",
+        "Instrumental melody MIDI",
+        "midi",
+    ),
+    ("chords_midi", "chords.mid", "Chord MIDI", "midi"),
+];
+
+const RECORDED_SETTINGS: &[&str] = &[
+    "prompts",
+    "preset",
+    "melody_only",
+    "dtype",
+    "window_seconds",
+    "overlap_seconds",
+    "lookahead_seconds",
+    "duration_seconds",
+];
+
 #[derive(Serialize, Clone, Debug)]
 pub struct AudioAsset {
     pub path: String,
@@ -205,6 +276,58 @@ fn timestamp_from_id(id: &str) -> String {
     id.to_owned()
 }
 
+fn available_artifacts(run: &Path) -> Result<Vec<Value>, String> {
+    let mut result = Vec::new();
+    for (id, filename, label, kind) in ARTIFACTS {
+        let path = run.join(filename);
+        if !path.try_exists().map_err(|e| e.to_string())? {
+            continue;
+        }
+        let path = contained_path(run, &path)?;
+        if !path.is_file() {
+            return Err("The artifact is not a regular file".to_owned());
+        }
+        result.push(json!({"id": id, "filename": filename, "label": label, "kind": kind}));
+    }
+    Ok(result)
+}
+
+fn annotation_exports(run: &Path, artifacts: &[Value]) -> Result<Value, String> {
+    let mut annotations = serde_json::Map::new();
+    for artifact in artifacts {
+        if artifact["kind"] == "annotation" {
+            let id = artifact["id"]
+                .as_str()
+                .ok_or("Invalid artifact identifier")?;
+            let filename = artifact["filename"]
+                .as_str()
+                .ok_or("Invalid artifact filename")?;
+            annotations.insert(
+                id.to_owned(),
+                Value::String(read_text(run, &run.join(filename), MAX_EVENT_BYTES)?),
+            );
+        }
+    }
+    Ok(Value::Object(annotations))
+}
+
+fn recorded_provenance(meta: &Value, result: &Value) -> Value {
+    if let Some(provenance) = meta.get("provenance").filter(|value| value.is_object()) {
+        return provenance.clone();
+    }
+    // Old CLI/history runs did not record device or source revisions. Do not
+    // retroactively attribute current model pins or CPU settings to those runs.
+    let settings: serde_json::Map<String, Value> = RECORDED_SETTINGS
+        .iter()
+        .filter_map(|key| {
+            result
+                .get(*key)
+                .map(|value| ((*key).to_owned(), value.clone()))
+        })
+        .collect();
+    json!({"recorded_settings": settings})
+}
+
 /// List completed, parseable runs. Incomplete or malformed run directories are skipped.
 pub fn list_runs(root: &Path) -> Result<Vec<RunRecord>, String> {
     let canonical = canonical_root(root)?;
@@ -296,6 +419,9 @@ pub fn load_run(root: &Path, id: &str) -> Result<Value, String> {
     };
     let playback = read_json(&run, &run.join("playback.json"), MAX_EVENT_BYTES)?;
     let events = read_json(&run, &run.join("events.json"), MAX_EVENT_BYTES)?;
+    let artifacts = available_artifacts(&run)?;
+    let annotations = annotation_exports(&run, &artifacts)?;
+    let provenance = recorded_provenance(&meta, &result);
     Ok(json!({
         "run_id": id,
         "output_dir": path_string(&run)?,
@@ -305,6 +431,9 @@ pub fn load_run(root: &Path, id: &str) -> Result<Value, String> {
         "abc": abc,
         "playback": playback,
         "events": events,
+        "annotations": annotations,
+        "available_artifacts": artifacts,
+        "provenance": provenance,
     }))
 }
 
@@ -407,13 +536,13 @@ pub fn import_audio(root: &Path, source: &Path) -> Result<AudioAsset, String> {
 
 /// The UI can export only these known artifacts from an existing run.
 pub fn artifact_path(root: &Path, id: &str, artifact: &str) -> Result<PathBuf, String> {
-    let filename = match artifact {
-        "abc" => "score.abc",
-        "midi" => "transcription.mid",
-        "events" => "events.json",
-        _ => return Err("Unknown artifact; choose abc, midi, or events".to_owned()),
-    };
+    let filename = ARTIFACTS
+        .iter()
+        .find(|(id, _, _, _)| *id == artifact)
+        .map(|(_, filename, _, _)| *filename)
+        .ok_or_else(|| "Unknown artifact identifier".to_owned())?;
     let run = run_directory(root, id)?;
+    summary(&run)?;
     let path = contained_path(&run, &run.join(filename))?;
     if !path.is_file() {
         return Err("The artifact is not a regular file".to_owned());
@@ -424,6 +553,11 @@ pub fn artifact_path(root: &Path, id: &str, artifact: &str) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // macOS clocks may return identical timestamps to concurrent test threads.
+    // A shared counter prevents one fixture's Drop from deleting another's root.
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     struct Fixture {
         root: PathBuf,
@@ -434,8 +568,11 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = std::env::temp_dir()
-                .join(format!("sheetsage-catalog-{}-{nonce}", std::process::id()));
+            let root = std::env::temp_dir().join(format!(
+                "sheetsage-catalog-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+            ));
             fs::create_dir_all(root.join("runtime/outputs")).unwrap();
             fs::create_dir_all(root.join("samples")).unwrap();
             fs::write(root.join("samples/demo.mp3"), b"test audio").unwrap();
@@ -505,6 +642,12 @@ mod tests {
         fs::write(run.join(".desktop-job.json"), "{}").unwrap();
         assert!(list_runs(&fixture.root).unwrap().is_empty());
         assert!(load_run(&fixture.root, "cancelled-20261018T010000000001Z-abcdef12").is_err());
+        assert!(artifact_path(
+            &fixture.root,
+            "cancelled-20261018T010000000001Z-abcdef12",
+            "summary"
+        )
+        .is_err());
 
         fs::write(run.join("ui.json"), "{}").unwrap();
         assert_eq!(list_runs(&fixture.root).unwrap().len(), 1);
@@ -543,6 +686,85 @@ mod tests {
     }
 
     #[test]
+    fn all_allowlisted_artifacts_load_and_export_without_arbitrary_paths() {
+        let fixture = Fixture::new();
+        let run = fixture.run("complete");
+        for (id, filename, _, _) in ARTIFACTS {
+            if !run.join(filename).exists() {
+                fs::write(run.join(filename), format!("0.25\t1.0\t{id}\n")).unwrap();
+            }
+            assert_eq!(
+                artifact_path(&fixture.root, "complete", id).unwrap(),
+                run.join(filename)
+            );
+        }
+        let data = load_run(&fixture.root, "complete").unwrap();
+        assert_eq!(
+            data["available_artifacts"].as_array().unwrap().len(),
+            ARTIFACTS.len()
+        );
+        assert_eq!(data["annotations"].as_object().unwrap().len(), 10);
+        assert_eq!(
+            data["annotations"]["rhythm_events"],
+            "0.25\t1.0\trhythm_events\n"
+        );
+        assert!(artifact_path(&fixture.root, "complete", "beat.lab").is_err());
+        assert!(artifact_path(&fixture.root, "complete", "tokens.json").is_err());
+    }
+
+    #[test]
+    fn history_preserves_raw_events_empty_annotations_and_recorded_provenance() {
+        let fixture = Fixture::new();
+        let run = fixture.run("recorded");
+        let events = json!({"schema_version":"v1", "events":[{"time":0.25,"values":{
+            "rhythm":{"meter":[6,8],"eighth_position":1},
+            "melody":[{"pitch":60,"track":0,"end_time":0.75}]
+        }}]});
+        fs::write(run.join("events.json"), events.to_string()).unwrap();
+        fs::write(run.join("melody_instrumental.lab"), "").unwrap();
+        let provenance = json!({"device":"cpu","sources":{"model_revision":"pinned"},
+            "recorded_settings":{"preset":"default","dtype":"fp32"}});
+        fs::write(
+            run.join("ui.json"),
+            json!({"provenance":provenance}).to_string(),
+        )
+        .unwrap();
+        let data = load_run(&fixture.root, "recorded").unwrap();
+        assert_eq!(data["events"], events);
+        assert_eq!(data["annotations"], json!({"melody_instrumental":""}));
+        assert_eq!(data["provenance"], provenance);
+        assert!(data["annotations"].get("beat_meter").is_none());
+
+        fs::remove_file(run.join("ui.json")).unwrap();
+        let legacy = load_run(&fixture.root, "recorded").unwrap();
+        assert!(legacy["provenance"].get("device").is_none());
+        assert!(legacy["provenance"].get("sources").is_none());
+        assert_eq!(
+            legacy["provenance"]["recorded_settings"]["duration_seconds"],
+            20.0
+        );
+    }
+
+    #[test]
+    fn missing_optional_exports_are_not_listed_and_large_annotations_fail() {
+        let fixture = Fixture::new();
+        let run = fixture.run("optional");
+        let data = load_run(&fixture.root, "optional").unwrap();
+        assert_eq!(data["annotations"], json!({}));
+        assert!(!data["available_artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["id"] == "beat_meter"));
+        assert!(artifact_path(&fixture.root, "optional", "beat_meter").is_err());
+        File::create(run.join("beat.lab"))
+            .unwrap()
+            .set_len(MAX_EVENT_BYTES + 1)
+            .unwrap();
+        assert!(load_run(&fixture.root, "optional").is_err());
+    }
+
+    #[test]
     fn rejects_oversized_or_unsupported_imports() {
         let fixture = Fixture::new();
         let bad = fixture.root.join("no.txt");
@@ -574,5 +796,23 @@ mod tests {
         )
         .unwrap();
         assert!(load_run(&fixture.root, "safe").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_annotation_and_midi_exports_reject_symlink_escapes() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let run = fixture.run("safe");
+        for (id, filename) in [
+            ("beat", "beat.lab"),
+            ("melody_vocal_midi", "melody_vocal.mid"),
+        ] {
+            symlink(outside.root.join("samples/demo.mp3"), run.join(filename)).unwrap();
+            assert!(artifact_path(&fixture.root, "safe", id).is_err());
+            assert!(load_run(&fixture.root, "safe").is_err());
+            fs::remove_file(run.join(filename)).unwrap();
+        }
     }
 }

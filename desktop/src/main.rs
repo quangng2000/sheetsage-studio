@@ -149,20 +149,23 @@ async fn export_artifact(
     state: State<'_, DesktopState>,
 ) -> Result<Option<String>, String> {
     let source = catalog::artifact_path(&state.lab_root, &run_id, &artifact)?;
-    let extension = match artifact.as_str() {
-        "abc" => "abc",
-        "midi" => "mid",
-        "events" => "json",
-        _ => return Err("Unknown artifact.".into()),
-    };
-    let filename = format!("{run_id}.{extension}");
+    // The catalog has already validated the identifier against its allowlist.
+    // Preserve each annotation's filename so beat/key/LAB exports do not collide.
+    let basename = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("The selected artifact has no valid filename.")?;
+    let filename = format!("{run_id}-{basename}");
     tauri::async_runtime::spawn_blocking(move || {
+        // Do not infer a native file type from these suffixes: musical ABC can
+        // resolve to Alembic on macOS, while LAB is an undeclared dynamic type.
+        // The catalog already restricts the source; keep its suggested suffix
+        // without restricting the user's destination through native filters.
         let destination = app
             .dialog()
             .file()
-            .set_title("Export transcription")
+            .set_title("Export musical analysis")
             .set_file_name(&filename)
-            .add_filter("Transcription", &[extension])
             .blocking_save_file();
         let Some(file) = destination else {
             return Ok(None);

@@ -25,7 +25,13 @@ jobs:
       - name: Persistent worker tests (fake model)
         run: python3 -m unittest discover -s desktop -p 'test_*.py' -v
       - name: Check frontend JavaScript syntax
-        run: node --check desktop/ui/app.js
+        run: |
+          node --check desktop/ui/app.js
+          node --check desktop/ui/music-analysis.js
+          node --check desktop/ui/audio-preview.js
+          node --check desktop/ui/workspace-view.js
+      - name: Musical analysis tests (no model downloads)
+        run: node --test tests/*.test.cjs
 
   native-macos:
     # Standard Apple Silicon runner; no larger/paid runner label is needed.

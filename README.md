@@ -1,6 +1,6 @@
 # SheetSage Studio
 
-A local desktop workspace for turning music recordings into melody, chords, a piano roll, and sheet music with [SheetSage2](https://huggingface.co/m-a-p/SheetSage2).
+A local producer-style workspace for exploring musical structure, harmony, rhythm, and melody with [SheetSage2](https://huggingface.co/m-a-p/SheetSage2).
 
 ```mermaid
 flowchart LR
@@ -8,9 +8,11 @@ flowchart LR
     B <-->|JSON lines| C[Persistent Python worker]
     C --> D[SheetSage2 + MERT model]
     D --> E[Notes and musical events]
-    E --> F[Piano roll]
-    E --> G[Sheet music / ABC]
-    E --> H[MIDI / JSON export]
+    E --> F[Arrangement: sections / chords / keys]
+    E --> G[Rhythm: beats / downbeats / meter]
+    G --> T[Derived quarter-note tempo]
+    E --> M[Vocal + instrumental melody]
+    E --> H[Sheet music / MIDI / JSON / LAB]
 ```
 
 Local inference • Model stays warm between jobs • No npm/frontend build • No cloud inference service
@@ -59,7 +61,17 @@ Setup downloads approximately 2.76 GB of model weights plus dependencies. Weight
 cargo run --manifest-path desktop/Cargo.toml --locked
 ```
 
-In the app: **Explore the demo → Transcribe → Piano roll / Sheet music / Events → export MIDI, ABC, or JSON.** Or choose your own music recording. “Warm model” loads the model before your first job.
+In the app: **Import audio → Analyze → Arrangement → click a musical region to listen and inspect.** Zoom into the shared timeline, then explore the piano roll, notation, or event log. “Warm model” loads the model before your first job.
+
+| Musical view | What you see |
+| --- | --- |
+| Arrangement | Song sections, chord changes, keys, and meter changes on one audio-synchronized timeline |
+| Rhythm | Predicted beats and emphasized downbeats; tempo derived from beat timing, in quarter-note BPM |
+| Melody | Separate vocal and instrumental **note predictions**, not separated audio stems |
+| Inspector | Musical context at the cursor, selected-region details, prediction/derivation source, and model diagnostics |
+| Exports | Available MIDI, ABC, raw JSON/TSV, and individual LAB annotations |
+
+Missing predictions stay missing; no confidence percentages or musical labels are fabricated. See [musical analysis semantics](docs/MUSICAL_ANALYSIS.md).
 
 Build a local `.app` instead:
 
@@ -81,7 +93,7 @@ python3 run.py transcribe samples/demo.mp3 --max-seconds 20
 runtime/outputs/<recording>-<timestamp>/
 ├── result.json         # Summary and diagnostics
 ├── events.json         # Musical events
-├── playback.json       # Piano-roll note tracks
+├── playback.json       # Synthesizable tracks, including chord voicings
 ├── score.abc           # Notation, when generated
 └── transcription.mid   # MIDI, when generated
 ```
