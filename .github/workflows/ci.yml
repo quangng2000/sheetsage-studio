@@ -1,0 +1,43 @@
+name: Offline checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-and-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Setup CLI tests (stdlib only)
+        run: python3 -m unittest discover -s tests -v
+      - name: Persistent worker tests (fake model)
+        run: python3 -m unittest discover -s desktop -p 'test_*.py' -v
+      - name: Check frontend JavaScript syntax
+        run: node --check desktop/ui/app.js
+
+  native-macos:
+    # Standard Apple Silicon runner; no larger/paid runner label is needed.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install stable Rust and rustfmt
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Check Rust formatting
+        run: cargo +stable fmt --manifest-path desktop/Cargo.toml -- --check
+      - name: Build and test native host (no model downloads)
+        run: cargo +stable test --manifest-path desktop/Cargo.toml --locked -j 4

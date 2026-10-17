@@ -1,0 +1,24 @@
+[package]
+name = "sheetsage-studio"
+version = "0.1.0"
+description = "Local desktop workspace for SheetSage2 music transcription"
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.release]
+opt-level = 1
+debug = 0
+strip = "debuginfo"

@@ -1,0 +1,15 @@
+{
+  "paper": "https://arxiv.org/abs/2610.05336",
+  "model": "m-a-p/SheetSage2",
+  "model_revision": "b83c3d79a6d98bcffaf8f9ed112c90aa887887bc",
+  "model_weights_bytes": 228738564,
+  "base_model": "m-a-p/MERT-v2-FullSong",
+  "base_revision": "d8ba1c745e733b3908ce6ad16ebeb17ac7600a42",
+  "base_weights_bytes": 2529812848,
+  "base_weight_license": "CC-BY-NC-4.0",
+  "sample": "https://map-yue2.github.io/assets/covers/where-is-my-wallet-chord/where-is-my-wallet-chord.mp3",
+  "sample_sha256": "fc9af1b1d1f05381c3479f92773a8959e18b7aaec49c057d068ba0cd52295807",
+  "sample_bytes": 1209068,
+  "retrieved_date": "2026-10-17",
+  "notes": "Weights, upstream model code, and demo audio are downloaded separately, not redistributed in this repository. See THIRD_PARTY_NOTICES.md."
+}

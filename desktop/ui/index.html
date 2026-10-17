@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>SheetSage Studio</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="assets/abcjs-basic-min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Workspace sidebar">
+      <div class="brand"><span class="brand-icon">♮</span><div>SheetSage<span>LOCAL STUDIO</span></div></div>
+      <button class="workspace-button selected" id="workspace-button"><span>♫</span> Transcription workspace <span class="nav-dot"></span></button>
+      <div class="sidebar-section"><h2>RECENT SESSIONS</h2><span id="run-count">0</span></div>
+      <div id="run-history" class="run-history"><p class="sidebar-empty">Your transcriptions will appear here.</p></div>
+      <button class="sample-button" id="sample-button"><span class="sample-icon">▶</span><span>Explore the demo<span>20-second sample</span></span><span>↗</span></button>
+      <div class="sidebar-bottom"><span class="device-dot"></span><div>On this Mac<span>Audio stays on your device</span></div><span class="lock-icon" aria-hidden="true">⌘</span></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar"><div class="breadcrumb">Workspace <span>/</span> <strong>Audio transcription</strong></div><div class="runtime-pill"><span id="model-light" class="status-light"></span><span id="model-status">Checking model…</span><span class="local-badge">LOCAL</span></div></header>
+      <section class="workspace-heading"><div><div class="eyebrow">HEAR IT. SEE IT. EXPLORE IT.</div><h1>Your audio, in notation.</h1><p>Discover the melody, harmony, and structure inside a recording.</p></div><button id="warm-button" class="button secondary"><span>◈</span> Warm model</button></section>
+
+      <section class="source-card" aria-label="Audio source">
+        <div class="source-upper"><div class="file-icon">♫</div><div class="file-info"><h2 id="audio-name">Choose a recording</h2><p id="audio-detail">MP3, WAV, FLAC, M4A, and other supported audio</p></div><button id="choose-button" class="button secondary"><span>＋</span> Choose audio</button><span class="button-divider"></span><label class="clip-select" for="clip-duration"><span>TRANSCRIBE</span><select id="clip-duration"><option value="20">First 20 seconds</option><option value="60">First 60 seconds</option><option value="120">First 2 minutes</option><option value="300">First 5 minutes</option></select></label><button id="transcribe-button" class="button primary"><span>✦</span> Transcribe</button><button id="cancel-button" class="button danger" hidden>Cancel</button></div>
+        <div class="waveform-wrap"><canvas id="waveform" aria-label="Audio waveform. Click to seek." role="img"></canvas><div class="waveform-empty" id="waveform-empty"><span>▂ ▅ ▃ ▇ ▄ ▆ ▂</span>Choose audio or explore the demo</div></div>
+        <div class="transport"><button id="play-button" class="play-button" aria-label="Play audio" disabled>▶</button><span id="play-time" class="time-display">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Audio playback position" disabled><span id="total-time" class="time-display muted">0:00</span><span class="transport-separator"></span><label class="volume-label" aria-label="Volume">♪<input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume"></label><span class="original-label"><span></span>Original audio</span></div>
+        <audio id="audio" preload="metadata"></audio>
+      </section>
+
+      <section id="job-panel" class="job-panel" aria-live="polite" hidden><div class="job-spinner"></div><div class="job-copy"><strong id="job-title">Starting transcription</strong><span id="job-detail">Preparing your recording…</span></div><span id="job-stage">PREPARING</span></section>
+      <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-message"></span><button id="dismiss-error" aria-label="Dismiss error">×</button></div>
+
+      <section id="result-section" class="result-section" aria-label="Transcription result">
+        <div class="result-heading"><div class="result-heading-left"><h2>Transcription</h2><span id="result-state" class="result-badge">Ready to explore</span></div><div class="exports"><button class="text-button" id="export-midi" disabled>↓ MIDI</button><button class="text-button" id="export-abc" disabled>↓ ABC</button><button class="text-button" id="open-output" disabled aria-label="Open output folder">↗ <span>Open folder</span></button></div></div>
+        <div class="result-toolbar"><div class="tabs" role="tablist" aria-label="Result view"><button id="tab-roll" role="tab" aria-selected="true" aria-controls="panel-roll" class="tab active" data-tab="roll">▤ <span>Piano roll</span></button><button id="tab-score" role="tab" aria-selected="false" aria-controls="panel-score" class="tab" data-tab="score">♬ <span>Sheet music</span></button><button id="tab-events" role="tab" aria-selected="false" aria-controls="panel-events" class="tab" data-tab="events">≡ <span>Events</span></button></div><div class="track-legend" id="track-legend"></div></div>
+
+        <div id="empty-result" class="empty-result"><div class="empty-staff">♫</div><h3>A new way to listen.</h3><p>Choose a recording and transcribe it to explore its notes,<br>chords, and musical structure.</p><button id="empty-demo" class="button secondary">Explore the demo <span>→</span></button></div>
+        <div id="result-panels" hidden>
+          <div id="panel-roll" class="tab-panel" role="tabpanel" aria-labelledby="tab-roll"><div class="roll-context"><span id="key-label">KEY —</span><span id="meter-label">METER —</span><span id="roll-duration">—</span><span class="context-hint">Click the timeline to seek</span></div><div id="chord-lane" class="chord-lane"><span class="lane-label">CHORD</span><div id="chord-blocks"></div></div><div class="piano-roll-wrap"><canvas id="piano-roll" role="img" aria-label="Transcribed notes arranged by pitch and time. Click to seek."></canvas></div><div class="roll-bottom"><span>PITCH ↑</span><span>TIME →</span><span>CLICK TO SEEK</span></div></div>
+          <div id="panel-score" class="tab-panel" role="tabpanel" aria-labelledby="tab-score" hidden><div class="score-hint"><span>Engraved from the model’s ABC notation</span><button id="toggle-abc" class="text-button">Show ABC source</button></div><div id="score-output" class="score-output"></div><pre id="abc-source" class="abc-source" hidden></pre></div>
+          <div id="panel-events" class="tab-panel" role="tabpanel" aria-labelledby="tab-events" hidden><div class="events-heading"><span id="event-count">0 musical events</span><button id="export-events" class="text-button">↓ Export JSON</button></div><div class="event-table-wrap"><table><thead><tr><th>Time</th><th>Chord</th><th>Key</th><th>Structure</th><th>Melody</th></tr></thead><tbody id="events-body"></tbody></table></div></div>
+        </div>
+      </section>
+
+      <section id="stats" class="stats" aria-label="Transcription statistics" hidden></section>
+      <footer class="workspace-footer"><span><span class="privacy-dot"></span> Local inference · No audio uploads</span><span id="footer-status">SheetSage2 · Music understanding, on your machine</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

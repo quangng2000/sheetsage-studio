@@ -1,0 +1,9 @@
+SheetSage Studio
+Copyright 2026 Quang Tri Nguyen
+
+Original application code is licensed under the Apache License, Version 2.0.
+Third-party components and separately downloaded model assets retain their
+own licenses. See THIRD_PARTY_NOTICES.md.
+
+This is an independent local interface for the official SheetSage2 model,
+not an official release by the SheetSage2 or MERT authors.
