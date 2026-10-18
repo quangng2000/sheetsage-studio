@@ -68,6 +68,7 @@ In the app: **Import audio → Analyze → Arrangement → click a musical regio
 | Arrangement | Song sections, chord changes, keys, and meter changes on one audio-synchronized timeline |
 | Rhythm | Predicted beats and emphasized downbeats; tempo derived from beat timing, in quarter-note BPM |
 | Melody | Separate vocal and instrumental **note predictions**, not separated audio stems |
+| Follow Audio | Notation highlights current notes/rests and scrolls with playback; click a note to seek |
 | Inspector | Musical context at the cursor, selected-region details, prediction/derivation source, and model diagnostics |
 | Exports | Available MIDI, ABC, raw JSON/TSV, and individual LAB annotations |
 

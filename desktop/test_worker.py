@@ -163,6 +163,79 @@ class WorkerTest(unittest.TestCase):
         self.assertNotIn("unrecognized", available)
         self.assertNotIn("device", payload["provenance"])
 
+    def test_score_timing_preserves_exact_notation_grid_and_playback_measures(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        notation = output / "notation"
+        notation.mkdir()
+        # The final notation boundary is absent from raw beat predictions.
+        raw_beats = "0.0\t1\t4\t4\n0.5\t2\t4\t4\n"
+        notation_beats = raw_beats + "1.0\t3\t4\t4\n"
+        (output / "beat.lab").write_text(raw_beats, encoding="utf-8")
+        (notation / "song_beats.txt").write_text(notation_beats, encoding="utf-8")
+        playback = {"duration": 20, "tracks": [], "measures": [{
+            "index": 0, "start": 0, "end": 1, "score_start": 0, "score_end": 1,
+            "leading_rest": 0.5, "trailing_rest": 0,
+        }]}
+        (output / "playback.json").write_text(json.dumps(playback), encoding="utf-8")
+        payload = worker_module.read_result(output, self.audio)
+        self.assertEqual(payload["score_timing"], {"version": 1, "notation_beats": notation_beats})
+        self.assertEqual(payload["annotations"]["beat"], raw_beats)
+        self.assertEqual(payload["playback"], playback)
+        self.assertNotIn("score_timing", {value["id"] for value in payload["available_artifacts"]})
+        self.assertEqual(worker_module.read_result(output, self.audio)["score_timing"], payload["score_timing"])
+
+    def test_missing_or_empty_score_timing_remains_optional(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        self.assertIsNone(worker_module.read_result(output, self.audio)["score_timing"])
+        (output / "notation").mkdir()
+        (output / "notation/song_beats.txt").write_text("", encoding="utf-8")
+        self.assertEqual(worker_module.read_result(output, self.audio)["score_timing"],
+                         {"version": 1, "notation_beats": ""})
+
+    def test_fresh_worker_result_carries_score_timing_without_model_changes(self):
+        model = Mock()
+        notation_beats = "0.0\t1\t7\t8\n0.2\t2\t7\t8\n"
+        def transcribe(audio, *, output_dir, **options):
+            write_exports(output_dir)
+            (output_dir / "notation").mkdir()
+            (output_dir / "notation/song_beats.txt").write_text(notation_beats, encoding="utf-8")
+        model.transcribe.side_effect = transcribe
+        worker = self.make_worker(model)
+        worker.dispatch(self.transcribe_command())
+        worker.wait_idle()
+        payload = next(event["result"] for event in self.events() if event["type"] == "result")
+        self.assertEqual(payload["score_timing"], {"version": 1, "notation_beats": notation_beats})
+
+    def test_nested_score_timing_symlinks_and_size_limits_are_enforced(self):
+        output = self.root / "exports"
+        output.mkdir()
+        write_exports(output)
+        notation = output / "notation"
+        notation.mkdir()
+        beats = notation / "song_beats.txt"
+        beats.symlink_to(self.audio)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            worker_module.read_result(output, self.audio)
+        beats.unlink()
+        notation.rmdir()
+        # Validate the parent directory too, not just a final-file symlink.
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "song_beats.txt").write_text("0\t1\t4\t4\n", encoding="utf-8")
+        notation.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            worker_module.read_result(output, self.audio)
+        notation.unlink()
+        notation.mkdir()
+        with beats.open("wb") as stream:
+            stream.truncate(worker_module.MAX_EXPORT_BYTES + 1)
+        with self.assertRaisesRegex(ValueError, "size limit"):
+            worker_module.read_result(output, self.audio)
+
     def test_new_run_provenance_is_recorded_for_history_without_private_paths(self):
         (self.root / "sources.json").write_text(json.dumps({
             "model": "publisher/model", "model_revision": "pinned-revision",

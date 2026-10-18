@@ -328,6 +328,19 @@ fn recorded_provenance(meta: &Value, result: &Value) -> Value {
     json!({"recorded_settings": settings})
 }
 
+fn score_timing(run: &Path) -> Result<Value, String> {
+    // This is the exact notation grid, including its final extrapolated beat.
+    // Keep the one fixed nested path inside the existing canonical run boundary.
+    let path = run.join("notation/song_beats.txt");
+    if !path.try_exists().map_err(|e| e.to_string())? {
+        return Ok(Value::Null);
+    }
+    Ok(json!({
+        "version": 1,
+        "notation_beats": read_text(run, &path, MAX_EVENT_BYTES)?,
+    }))
+}
+
 /// List completed, parseable runs. Incomplete or malformed run directories are skipped.
 pub fn list_runs(root: &Path) -> Result<Vec<RunRecord>, String> {
     let canonical = canonical_root(root)?;
@@ -422,6 +435,7 @@ pub fn load_run(root: &Path, id: &str) -> Result<Value, String> {
     let artifacts = available_artifacts(&run)?;
     let annotations = annotation_exports(&run, &artifacts)?;
     let provenance = recorded_provenance(&meta, &result);
+    let timing = score_timing(&run)?;
     Ok(json!({
         "run_id": id,
         "output_dir": path_string(&run)?,
@@ -434,6 +448,7 @@ pub fn load_run(root: &Path, id: &str) -> Result<Value, String> {
         "annotations": annotations,
         "available_artifacts": artifacts,
         "provenance": provenance,
+        "score_timing": timing,
     }))
 }
 
@@ -762,6 +777,79 @@ mod tests {
             .set_len(MAX_EVENT_BYTES + 1)
             .unwrap();
         assert!(load_run(&fixture.root, "optional").is_err());
+    }
+
+    #[test]
+    fn legacy_and_desktop_runs_share_exact_score_timing_and_playback_measures() {
+        let fixture = Fixture::new();
+        let run = fixture.run("score-timing");
+        fs::create_dir(run.join("notation")).unwrap();
+        let raw_beats = "0.0\t1\t4\t4\n0.5\t2\t4\t4\n";
+        let notation_beats = format!("{raw_beats}1.0\t3\t4\t4\n");
+        fs::write(run.join("beat.lab"), raw_beats).unwrap();
+        fs::write(run.join("notation/song_beats.txt"), &notation_beats).unwrap();
+        let playback = json!({"duration":20, "tracks":[], "measures":[{
+            "index":0,"start":0,"end":1,"score_start":0,"score_end":1,
+            "leading_rest":0.5,"trailing_rest":0
+        }]});
+        fs::write(run.join("playback.json"), playback.to_string()).unwrap();
+        let legacy = load_run(&fixture.root, "score-timing").unwrap();
+        assert_eq!(
+            legacy["score_timing"],
+            json!({"version":1,"notation_beats":notation_beats})
+        );
+        assert_eq!(legacy["annotations"]["beat"], raw_beats);
+        assert_eq!(legacy["playback"], playback);
+        assert!(!legacy["available_artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["id"] == "score_timing"));
+
+        fs::write(run.join(".desktop-job.json"), "{}").unwrap();
+        fs::write(run.join("ui.json"), "{}").unwrap();
+        let desktop = load_run(&fixture.root, "score-timing").unwrap();
+        assert_eq!(desktop["score_timing"], legacy["score_timing"]);
+        assert_eq!(desktop["playback"], legacy["playback"]);
+    }
+
+    #[test]
+    fn score_timing_is_optional_bounded_and_not_an_arbitrary_export() {
+        let fixture = Fixture::new();
+        let run = fixture.run("score-timing");
+        assert!(load_run(&fixture.root, "score-timing").unwrap()["score_timing"].is_null());
+        fs::create_dir(run.join("notation")).unwrap();
+        let beats = run.join("notation/song_beats.txt");
+        fs::write(&beats, "").unwrap();
+        assert_eq!(
+            load_run(&fixture.root, "score-timing").unwrap()["score_timing"],
+            json!({"version":1,"notation_beats":""})
+        );
+        assert!(artifact_path(&fixture.root, "score-timing", "notation/song_beats.txt").is_err());
+        File::create(&beats)
+            .unwrap()
+            .set_len(MAX_EVENT_BYTES + 1)
+            .unwrap();
+        assert!(load_run(&fixture.root, "score-timing").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_score_timing_file_and_directory_symlinks_cannot_escape_run() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let run = fixture.run("score-timing");
+        let notation = run.join("notation");
+        fs::create_dir(&notation).unwrap();
+        let beats = notation.join("song_beats.txt");
+        symlink(outside.root.join("samples/demo.mp3"), &beats).unwrap();
+        assert!(load_run(&fixture.root, "score-timing").is_err());
+        fs::remove_file(&beats).unwrap();
+        fs::remove_dir(&notation).unwrap();
+        fs::write(outside.root.join("song_beats.txt"), "0\t1\t4\t4\n").unwrap();
+        symlink(&outside.root, &notation).unwrap();
+        assert!(load_run(&fixture.root, "score-timing").is_err());
     }
 
     #[test]

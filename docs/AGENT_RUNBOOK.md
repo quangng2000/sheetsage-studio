@@ -143,6 +143,7 @@ Manual smoke test:
 3. Optionally click **Warm model**; wait for the ready state.
 4. Click **Analyze**. The window should remain responsive while Python executes the model.
 5. Inspect **Arrangement**: sections, chords, keys, meter, beat/downbeat grid, derived tempo, and raw vocal/instrumental melody. Click regions to seek and inspect them; use Fit/zoom to examine dense passages. Also inspect **Piano roll**, **Notation**, and **Event log**.
+   In Notation, play and seek with **Follow audio** enabled: current glyphs should highlight and the score viewport should scroll to the current staff. Click a note/rest or focus it and press Enter/Space to seek. Disable Follow audio to browse without auto-scroll; highlighting remains active.
 6. Use the export picker for available MIDI, ABC, JSON/TSV, and individual LAB annotations. Verify absent exports are not offered. See [musical semantics and export IDs](MUSICAL_ANALYSIS.md).
 7. Run another job: the worker should retain the model instead of loading it again.
 8. Inspect history, including reopening a successful run after restarting the app.
@@ -169,6 +170,9 @@ node --check desktop/ui/app.js
 node --check desktop/ui/music-analysis.js
 node --check desktop/ui/audio-preview.js
 node --check desktop/ui/workspace-view.js
+node --check desktop/ui/score-timing.js
+node --check desktop/ui/score-elements.js
+node --check desktop/ui/score-follow.js
 node --test tests/*.test.cjs
 ```
 

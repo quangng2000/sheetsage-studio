@@ -220,6 +220,9 @@ def read_result(
         available_artifacts.append({"id": artifact, "filename": filename, "label": label, "kind": kind})
         if kind == "annotation":
             annotations[artifact] = read_text(filename)
+    # Notation appends its own final boundary beat. Follow-audio mapping must
+    # use this exact exported grid, not reconstruct it from raw beat.lab.
+    notation_beats = read_text("notation/song_beats.txt")
     payload = {
         "run_id": output_dir.name,
         "output_dir": str(output_dir),
@@ -232,6 +235,7 @@ def read_result(
         "annotations": annotations,
         "available_artifacts": available_artifacts,
         "provenance": recorded_provenance(summary, lab_root),
+        "score_timing": {"version": 1, "notation_beats": notation_beats} if notation_beats is not None else None,
     }
     # Validate before publishing the history success marker or an event.
     json.dumps(payload, ensure_ascii=False, allow_nan=False)

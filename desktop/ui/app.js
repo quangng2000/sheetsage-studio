@@ -19,6 +19,7 @@ const invoke = (command, args) => {
 const audio = $("audio");
 audio.volume = 0.8;
 const workspace = window.ProducerWorkspace?.create({root: $("arrangement-root"), onSeek: seekTo});
+const scoreFollow = window.ScoreFollow?.create({root: $("score-output"), button: $("follow-audio"), status: $("score-follow-status"), onSeek: seekTo});
 
 function formatTime(seconds, fraction = false) {
   const value = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
@@ -268,7 +269,13 @@ function renderScore() {
   if(state.scoreRendered || !state.result)return;
   const output=$("score-output");output.replaceChildren();setText("abc-source",state.result.abc||"No ABC notation was produced.");
   if(!state.result.abc || !window.ABCJS?.renderAbc){const p=document.createElement("p");p.className="score-message";p.textContent=!state.result.abc?"This run did not produce sheet music. Explore the piano roll or events instead.":"The local notation renderer is unavailable. You can view or export the ABC source.";output.append(p);return;}
-  try {window.ABCJS.renderAbc(output,state.result.abc,{responsive:"resize",paddingtop:12,paddingbottom:16,paddingleft:5,paddingright:5,foregroundColor:"#263228",selectionColor:"#a47737",add_classes:true});state.scoreRendered=true;}
+  try {
+    // abcjs gives its responsive parent a percentage padding-bottom. Keep that
+    // sizing surface inside, not on, the bounded scrolling viewport.
+    const engraving=document.createElement("div");engraving.className="score-engraving";output.append(engraving);
+    const tunes=window.ABCJS.renderAbc(engraving,state.result.abc,{responsive:"resize",oneSvgPerLine:false,paddingtop:12,paddingbottom:16,paddingleft:5,paddingright:5,foregroundColor:"#263228",selectionColor:"#a47737",add_classes:true});
+    state.scoreRendered=true;scoreFollow?.attach(state.result,tunes[0]);
+  }
   catch(error){const p=document.createElement("p");p.className="score-message";p.textContent="This notation could not be engraved. Its ABC source is still available below.";output.replaceChildren(p);console.warn(error);}
 }
 function selectTab(tab) {
@@ -277,9 +284,11 @@ function selectTab(tab) {
   for(const name of ["arrangement","roll","score","events"]){const panel=$(`panel-${name}`);if(panel)panel.hidden=name!==tab;}
   if(tab==="score")renderScore();if(tab==="roll")drawPianoRoll();
   if(tab==="arrangement")workspace?.resize();
+  updatePlayback();
 }
 function renderResult(result) {
   state.result=result;state.scoreRendered=false;state.analysis=result&&window.MusicAnalysis?window.MusicAnalysis.analyze(result):null;
+  scoreFollow?.reset();
   workspace?.setResult(result);
   $("empty-result").hidden=Boolean(result);$("result-panels").hidden=!result;$("stats").hidden=!result;
   setText("result-state",result?"Transcribed locally":"Ready to explore");
@@ -308,7 +317,7 @@ async function loadRun(runId){if(state.busy)return;try{const result=await invoke
 async function chooseAudio(){try{const asset=await invoke("pick_audio");if(asset){$("error-banner").hidden=true;renderResult(null);await setAudio(asset);}}catch(error){showError(error);}}
 async function selectSample(){if(state.busy)return;try{const sample=await invoke("select_sample");state.sample=sample;const saved=state.runs.find(run=>run.name===sample.name);if(saved){const result=await invoke("get_run",{runId:saved.id});if(result.audio_path===sample.path){$("error-banner").hidden=true;renderResult(result);await setAudio(sample);return;}}$("error-banner").hidden=true;renderResult(null);await setAudio(sample);}catch(error){showError(error);}}
 function seekTo(time){if(!Number.isFinite(audio.duration))return;audio.currentTime=Math.max(0,Math.min(audio.duration,time));updatePlayback();}
-function updatePlayback(){setText("play-time",formatTime(audio.currentTime));$("seek").value=audio.duration?Math.round(audio.currentTime/audio.duration*1000):0;$("play-button").textContent=audio.paused?"▶":"Ⅱ";$("play-button").setAttribute("aria-label",audio.paused?"Play audio":"Pause audio");workspace?.setPlayback(audio.currentTime,!audio.paused);drawWaveform();if(state.activeTab==="roll")drawPianoRoll();}
+function updatePlayback(){setText("play-time",formatTime(audio.currentTime));$("seek").value=audio.duration?Math.round(audio.currentTime/audio.duration*1000):0;$("play-button").textContent=audio.paused?"▶":"Ⅱ";$("play-button").setAttribute("aria-label",audio.paused?"Play audio":"Pause audio");workspace?.setPlayback(audio.currentTime,!audio.paused);scoreFollow?.setPlayback(audio.currentTime,!audio.paused,state.activeTab==="score");drawWaveform();if(state.activeTab==="roll")drawPianoRoll();}
 function animate(){updatePlayback();if(!audio.paused)state.animationFrame=requestAnimationFrame(animate);}
 function timelineSeek(event,kind){const rect=event.currentTarget.getBoundingClientRect();let x=event.clientX-rect.left,width=rect.width,duration=audio.duration;if(kind==="roll"){x-=52;width-=68;duration=resultDuration();}if(x>=0&&x<=width&&Number.isFinite(duration))seekTo(x/width*duration);}
 
@@ -386,6 +395,8 @@ function handleModelEvent(event){
 
 const resizeObserver=new ResizeObserver(()=>{drawWaveform();if(state.activeTab==="roll")drawPianoRoll();if(state.activeTab==="arrangement")workspace?.resize();});
 resizeObserver.observe($("waveform"));resizeObserver.observe($("piano-roll"));
+const scoreResizeObserver=new ResizeObserver(()=>{if(state.activeTab==="score")scoreFollow?.resize();});
+scoreResizeObserver.observe($("score-output"));
 async function boot(){
   updateControls();
   try{

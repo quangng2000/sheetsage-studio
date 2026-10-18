@@ -30,6 +30,9 @@ jobs:
           node --check desktop/ui/music-analysis.js
           node --check desktop/ui/audio-preview.js
           node --check desktop/ui/workspace-view.js
+          node --check desktop/ui/score-timing.js
+          node --check desktop/ui/score-elements.js
+          node --check desktop/ui/score-follow.js
       - name: Musical analysis tests (no model downloads)
         run: node --test tests/*.test.cjs
 

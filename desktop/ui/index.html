@@ -10,6 +10,9 @@
   <script defer src="music-analysis.js"></script>
   <script defer src="audio-preview.js"></script>
   <script defer src="workspace-view.js"></script>
+  <script defer src="score-timing.js"></script>
+  <script defer src="score-elements.js"></script>
+  <script defer src="score-follow.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -39,7 +42,11 @@
         <div id="result-panels" hidden>
           <div id="panel-arrangement" class="tab-panel" role="tabpanel" aria-labelledby="tab-arrangement"><div id="arrangement-root"></div></div>
           <div id="panel-roll" class="tab-panel" role="tabpanel" aria-labelledby="tab-roll" hidden><div class="roll-context"><span id="key-label">KEY —</span><span id="meter-label">METER —</span><span id="roll-duration">—</span><span class="context-hint">Predicted melody · Click the timeline to seek</span></div><div id="chord-lane" class="chord-lane"><span class="lane-label">CHORD</span><div id="chord-blocks"></div></div><div class="piano-roll-wrap"><canvas id="piano-roll" role="img" aria-label="Transcribed notes arranged by pitch and time. Click to seek."></canvas></div><div class="roll-bottom"><span>PITCH ↑</span><span>ANALYZED EXCERPT →</span><span>CLICK TO SEEK</span></div></div>
-          <div id="panel-score" class="tab-panel" role="tabpanel" aria-labelledby="tab-score" hidden><div class="score-hint"><span>Engraved from the model’s ABC notation</span><button id="toggle-abc" class="text-button">Show ABC source</button></div><div id="score-output" class="score-output"></div><pre id="abc-source" class="abc-source" hidden></pre></div>
+          <div id="panel-score" class="tab-panel" role="tabpanel" aria-labelledby="tab-score" hidden>
+            <div class="score-hint"><span>Engraved from the model’s ABC notation</span><div class="score-actions"><button id="follow-audio" class="follow-audio" aria-pressed="true" disabled>✓ Follow audio</button><button id="toggle-abc" class="text-button">Show ABC source</button></div></div>
+            <div id="score-follow-status" class="score-follow-status">Analyze a recording to follow its score.</div>
+            <div id="score-output" class="score-output" aria-label="Sheet music. Click a note or rest to seek the recording."></div><pre id="abc-source" class="abc-source" hidden></pre>
+          </div>
           <div id="panel-events" class="tab-panel" role="tabpanel" aria-labelledby="tab-events" hidden><div class="events-heading"><span id="event-count">0 musical events</span><button id="export-events" class="text-button">↓ Export JSON</button></div><div class="event-table-wrap"><table><thead><tr><th>Time</th><th>Beat</th><th>Meter</th><th>Downbeat</th><th>Tempo (derived)</th><th>Chord</th><th>Key</th><th>Structure</th><th>Melody</th></tr></thead><tbody id="events-body"></tbody></table></div></div>
         </div>
       </section>

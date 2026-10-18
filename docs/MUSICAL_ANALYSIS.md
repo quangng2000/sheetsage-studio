@@ -80,6 +80,29 @@ input. Preview memory is released when the recording changes or the app closes;
 if correct playback timing cannot be established, playback is disabled while
 analysis and inspection remain available. No clock is fixed by rescaling times.
 
+### Follow Audio in notation
+
+The original recording is the clock. Current notated notes/rests highlight while
+it plays or is paused at a seek position. **Follow audio** controls automatic
+scrolling inside the score viewport; turning it off leaves highlighting and
+click-to-seek enabled. Notes/rests also support Enter/Space seeking.
+
+The timing adapter maps whole-note score positions to the saved
+`notation/song_beats.txt` grid through `playback.measures`. It accounts for
+leading/trailing notation rests, inferred meters, local tempo changes, and the
+last notation beat extending past the recording. It does not run a constant
+timer from the printed average BPM, synthesize the score, or rerun the model.
+Written padding seeks to the adjoining recorded boundary; positions outside
+the mapped recording are not extrapolated.
+
+Reopened analyses use the same `score_timing` payload as fresh results:
+`{version: 1, notation_beats: "<saved beat rows>"}`, or `null` if absent. Missing
+grids use explicitly labeled approximate measure timing; malformed grids disable
+following while leaving the notation readable. Alignment follows the model's
+quantized score, not a guarantee of sample-accurate acoustic note boundaries.
+The glyph adapter targets bundled abcjs 6.6.3 and keeps voices and tied segments
+separate. Scores are traversed as printed, not repeat-expanded performances.
+
 ## Export contract
 
 The native export API accepts only the IDs below; it does not accept arbitrary filenames or paths. Files are listed only when present within the completed run's directory.

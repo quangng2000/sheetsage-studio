@@ -20,6 +20,9 @@ Read [README.md](README.md), then follow [docs/AGENT_RUNBOOK.md](docs/AGENT_RUNB
 | `desktop/ui/` | Buildless HTML/CSS/JavaScript, score and piano-roll views |
 | `desktop/ui/music-analysis.js` | Pure normalization of model events and derived quarter-note tempo; shared by all musical views |
 | `desktop/ui/workspace-view.js` | Producer-style arrangement timeline and musical inspector |
+| `desktop/ui/score-timing.js` | Padding-aware original-audio ↔ whole-note score alignment |
+| `desktop/ui/score-elements.js` | Adapter for the pinned abcjs rendered glyph timing |
+| `desktop/ui/score-follow.js` | Note highlighting, score seeking, and viewport-only auto-scroll |
 | `runtime/` | Downloaded Python environment, models, imported audio, private output; never commit |
 
 No npm install or frontend bundler is required. Retain `desktop/Cargo.lock` and use Cargo's `--locked` flag. Do not silently upgrade model revisions, Python dependencies, Rust dependencies, or the bundled abcjs asset.
